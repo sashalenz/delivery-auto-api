@@ -1,0 +1,48 @@
+{
+    "name": "sashalenz/delivery-auto-api",
+    "description": "Delivery Auto API",
+    "keywords": [
+        "sashalenz",
+        "delivery-auto-api"
+    ],
+    "homepage": "https://github.com/sashalenz/delivery-auto-api",
+    "license": "MIT",
+    "authors": [
+        {
+            "name": "Oleksandr Petrovskyi",
+            "email": "sashalenz@gmail.com",
+            "role": "Developer"
+        }
+    ],
+    "require": {
+        "php": "^8.1",
+        "nesbot/carbon": "^2.57",
+        "spatie/laravel-package-tools": "^1.9",
+        "illuminate/contracts": "^9.0|^10.0"
+    },
+    "require-dev": {
+        "roave/security-advisories": "dev-latest"
+    },
+    "autoload": {
+        "psr-4": {
+            "Sashalenz\\DeliveryAuto\\": "src"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "Sashalenz\\DeliveryAuto\\Tests\\": "tests"
+        }
+    },
+    "config": {
+        "sort-packages": true
+    },
+    "extra": {
+        "laravel": {
+            "providers": [
+                "Sashalenz\\DeliveryAuto\\DeliveryServiceProvider"
+            ]
+        }
+    },
+    "minimum-stability": "dev",
+    "prefer-stable": true
+}
