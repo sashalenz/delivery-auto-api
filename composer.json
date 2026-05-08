@@ -1,9 +1,11 @@
 {
     "name": "sashalenz/delivery-auto-api",
-    "description": "Delivery Auto API",
+    "description": "Delivery Auto API client for Laravel",
     "keywords": [
         "sashalenz",
-        "delivery-auto-api"
+        "delivery-auto-api",
+        "laravel",
+        "delivery"
     ],
     "homepage": "https://github.com/sashalenz/delivery-auto-api",
     "license": "MIT",
@@ -15,12 +17,19 @@
         }
     ],
     "require": {
-        "php": "^8.1",
-        "nesbot/carbon": "^2.57",
-        "spatie/laravel-package-tools": "^1.9",
-        "illuminate/contracts": "^9.0|^10.0"
+        "php": "^8.2",
+        "illuminate/config": "^11.0||^12.0||^13.0",
+        "illuminate/http": "^11.0||^12.0||^13.0",
+        "illuminate/support": "^11.0||^12.0||^13.0",
+        "spatie/laravel-data": "^4.4",
+        "spatie/laravel-package-tools": "^1.16"
     },
     "require-dev": {
+        "larastan/larastan": "^3.0",
+        "laravel/pint": "^1.18",
+        "orchestra/testbench": "^9.0||^10.0",
+        "pestphp/pest": "^3.0",
+        "pestphp/pest-plugin-laravel": "^3.0",
         "roave/security-advisories": "dev-latest"
     },
     "autoload": {
@@ -33,13 +42,23 @@
             "Sashalenz\\DeliveryAuto\\Tests\\": "tests"
         }
     },
+    "scripts": {
+        "test": "vendor/bin/pest",
+        "test-coverage": "vendor/bin/pest --coverage",
+        "analyse": "vendor/bin/phpstan analyse",
+        "format": "vendor/bin/pint",
+        "format-test": "vendor/bin/pint --test"
+    },
     "config": {
-        "sort-packages": true
+        "sort-packages": true,
+        "allow-plugins": {
+            "pestphp/pest-plugin": true
+        }
     },
     "extra": {
         "laravel": {
             "providers": [
-                "Sashalenz\\DeliveryAuto\\DeliveryServiceProvider"
+                "Sashalenz\\DeliveryAuto\\DeliveryAutoServiceProvider"
             ]
         }
     },

@@ -1,107 +1,122 @@
 <?php
 
+declare(strict_types=1);
+
 namespace Sashalenz\DeliveryAuto;
 
 use Carbon\Carbon;
+use GuzzleHttp\Cookie\CookieJar;
+use Illuminate\Http\Client\ConnectionException;
+use Illuminate\Http\Client\PendingRequest;
 use Illuminate\Http\Client\RequestException;
+use Illuminate\Http\Client\Response;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Cache;
-use Illuminate\Support\Facades\Config;
 use Illuminate\Support\Facades\Http;
-use Sashalenz\DeliveryAuto\Exceptions\DeliveryException;
+use Sashalenz\DeliveryAuto\Exceptions\DeliveryAutoApiUnavailableException;
+use Sashalenz\DeliveryAuto\Exceptions\DeliveryAutoException;
 
 final class Request
 {
     private const TIMEOUT = 10;
+
     private const RETRY_TIMES = 3;
+
     private const RETRY_SLEEP = 100;
 
-    private string $url;
-    private string $method;
-    private array $params;
-    private bool $auth;
-    private string $dataKey;
-    private bool $isPost;
+    public const AUTH_NONE = 'none';
+
+    public const AUTH_HMAC = 'hmac';
+
+    public const AUTH_SESSION = 'session';
+
+    /** Marker for endpoints whose payload sits at the response root, not under `data`. */
+    public const DATA_KEY_ROOT = '__root__';
 
     public function __construct(
-        string $method,
-        array $params,
-        bool $auth,
-        string $dataKey,
-        bool $isPost = false
-    ) {
-        $this->method = $method;
-        $this->params = $params;
-        $this->auth = $auth;
-        $this->dataKey = $dataKey;
-        $this->isPost = $isPost;
-
-        $this->url = Config::get('delivery-api.url');
-    }
+        private readonly string $method,
+        private readonly array $params,
+        private readonly bool $isPost = false,
+        private readonly string $authMode = self::AUTH_NONE,
+        private readonly string $dataKey = 'data',
+        private readonly ?string $publicKey = null,
+        private readonly ?string $secretKey = null,
+    ) {}
 
     /**
-     * @return Collection
-     * @throws DeliveryException
+     * @return Collection<array-key, mixed>
+     *
+     * @throws DeliveryAutoException
      */
     public function make(): Collection
     {
         try {
-            $headers = [];
-
-            if ($this->auth) {
-                $headers['HMACAuthorization'] = 'amx ' . $this->hash();
-            }
-
-            $request = Http::timeout(self::TIMEOUT)
-                ->retry(
-                    self::RETRY_TIMES,
-                    self::RETRY_SLEEP
+            $response = $this->prepareRequest()
+                ->when(
+                    $this->isPost,
+                    fn (PendingRequest $r) => $r->post($this->method, $this->params),
+                    fn (PendingRequest $r) => $r->get($this->method, $this->params)
                 )
-                ->baseUrl($this->url)
-                ->asJson()
-                ->withHeaders($headers);
-
-            if ($this->isPost) {
-                $request = $request
-                    ->post(
-                        $this->method,
-                        $this->params
-                    )
-                    ->throw();
-            } else {
-                $request = $request
-                    ->get(
-                        $this->method,
-                        $this->params
-                    )
-                    ->throw();
-            }
-
-            if ((bool)$request->collect()->get('status') !== true) {
-                throw new DeliveryException('API Warning: ' . print_r($request->collect()->get('message'),1));
-            }
-
-            return $request->collect($this->dataKey);
-
+                ->throw();
+        } catch (ConnectionException $e) {
+            throw new DeliveryAutoApiUnavailableException(
+                'Delivery-Auto API unreachable. '.$e->getMessage(),
+                previous: $e
+            );
         } catch (RequestException $e) {
-            throw new DeliveryException('API Exception: ' . $e->getMessage());
+            if ($e->response->serverError()) {
+                throw new DeliveryAutoApiUnavailableException(
+                    'Delivery-Auto API server error. '.$e->getMessage(),
+                    previous: $e
+                );
+            }
+
+            throw new DeliveryAutoException(
+                'Delivery-Auto API request error. '.$e->getMessage(),
+                previous: $e
+            );
         }
+
+        $payload = $response->collect();
+
+        if ($payload->get('status') !== true) {
+            $message = $payload->get('message');
+            $code = (int) $payload->get('code', 0);
+
+            throw new DeliveryAutoException(
+                'Delivery-Auto API error. '.(is_string($message) ? $message : (string) json_encode($message)),
+                $code
+            );
+        }
+
+        if ($this->authMode === self::AUTH_SESSION) {
+            $this->captureSessionCookies($response);
+        }
+
+        if ($this->dataKey === self::DATA_KEY_ROOT) {
+            // Strip envelope keys; return everything else as-is.
+            return $payload->except(['status', 'message', 'code']);
+        }
+
+        $value = $payload->get($this->dataKey);
+
+        if ($value === null) {
+            return collect();
+        }
+
+        if (is_array($value)) {
+            return collect($value);
+        }
+
+        return collect([$value]);
     }
 
-    private function hash(): string
-    {
-        $publicKey = Config::get('delivery-api.public_key');
-        $secretKey = Config::get('delivery-api.secret_key');
-        $timestamp = Carbon::now()->timestamp;
-
-        return collect([
-            $publicKey,
-            $timestamp,
-            hash_hmac('sha1', $publicKey . $timestamp, $secretKey),
-        ])->implode(':');
-    }
-
-    public function cache(int $seconds = -1) : Collection
+    /**
+     * @return Collection<array-key, mixed>
+     *
+     * @throws DeliveryAutoException
+     */
+    public function cache(int $seconds = -1): Collection
     {
         if ($seconds === -1) {
             return Cache::rememberForever($this->getCacheKey(), fn () => $this->make());
@@ -110,8 +125,70 @@ final class Request
         return Cache::remember($this->getCacheKey(), $seconds, fn () => $this->make());
     }
 
-    private function getCacheKey() : string
+    private function prepareRequest(): PendingRequest
     {
-        return $this->method.'_'.collect($this->params)->values()->implode('_');
+        $request = Http::timeout(self::TIMEOUT)
+            ->retry(self::RETRY_TIMES, self::RETRY_SLEEP, throw: false)
+            ->baseUrl((string) config('delivery-auto-api.url'))
+            ->asJson();
+
+        if ($this->authMode === self::AUTH_HMAC) {
+            $request = $request->withHeaders([
+                'HMACAuthorization' => 'amx '.$this->hmacHeader(),
+            ]);
+        }
+
+        if ($this->authMode === self::AUTH_SESSION) {
+            $jar = SessionStore::cookies();
+            if ($jar instanceof CookieJar) {
+                $request = $request->withOptions(['cookies' => $jar]);
+            } else {
+                // First request in the session (login) — provide an empty jar so
+                // Set-Cookie headers from the response can be captured.
+                $request = $request->withOptions(['cookies' => new CookieJar]);
+            }
+        }
+
+        return $request;
+    }
+
+    /**
+     * Build the HMAC authorisation token: `publicKey:timestamp:hmac256(publicKey+timestamp, secretKey)`.
+     *
+     * Per PDF v3.5.1 §6.1 — algorithm is HMAC-SHA256 (NOT SHA1, despite the package's
+     * pre-2.0 implementation). Timestamp is Unix epoch seconds.
+     *
+     * Per-call credentials override `config('delivery-auto-api.{public,secret}_key')`,
+     * so multi-sender apps can route a single request to a specific company keypair.
+     */
+    private function hmacHeader(): string
+    {
+        $publicKey = $this->publicKey ?? (string) config('delivery-auto-api.public_key');
+        $secretKey = $this->secretKey ?? (string) config('delivery-auto-api.secret_key');
+        $timestamp = (string) Carbon::now()->timestamp;
+
+        $hash = hash_hmac('sha256', $publicKey.$timestamp, $secretKey);
+
+        return $publicKey.':'.$timestamp.':'.$hash;
+    }
+
+    private function captureSessionCookies(Response $response): void
+    {
+        SessionStore::store($response->cookies());
+    }
+
+    private function getCacheKey(): string
+    {
+        return collect([
+            'delivery-auto',
+            $this->method,
+            $this->isPost ? 'post' : 'get',
+            $this->authMode,
+            // Include a public-key hash so multi-sender apps don't share cache
+            // entries between different HMAC keypairs. Hash, not the raw key,
+            // so cache stores never have credential material in their keys.
+            $this->publicKey === null ? '_' : substr(sha1($this->publicKey), 0, 8),
+            base64_encode(serialize($this->params)),
+        ])->implode('_');
     }
 }

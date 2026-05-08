@@ -1,36 +1,46 @@
 <?php
 
+declare(strict_types=1);
+
 namespace Sashalenz\DeliveryAuto\Tests;
 
+use Illuminate\Foundation\Application;
 use Orchestra\Testbench\TestCase as Orchestra;
-use Sashalenz\DeliveryAuto\DeliveryServiceProvider;
+use Sashalenz\DeliveryAuto\DeliveryAutoServiceProvider;
+use Sashalenz\DeliveryAuto\SessionStore;
+use Spatie\LaravelData\LaravelDataServiceProvider;
 
 class TestCase extends Orchestra
 {
-    public function setUp(): void
+    protected function setUp(): void
     {
         parent::setUp();
+
+        SessionStore::clear();
     }
 
+    /**
+     * @param  Application  $app
+     * @return array<int, class-string>
+     */
     protected function getPackageProviders($app): array
     {
         return [
-            DeliveryServiceProvider::class,
+            LaravelDataServiceProvider::class,
+            DeliveryAutoServiceProvider::class,
         ];
     }
 
-    public function getEnvironmentSetUp($app): void
+    /**
+     * @param  Application  $app
+     */
+    protected function defineEnvironment($app): void
     {
-        $app['config']->set('database.default', 'sqlite');
-        $app['config']->set('database.connections.sqlite', [
-            'driver' => 'sqlite',
-            'database' => ':memory:',
-            'prefix' => '',
-        ]);
-
-        /*
-        include_once __DIR__.'/../database/migrations/create_delivery_api_table.php.stub';
-        (new \CreatePackageTable())->up();
-        */
+        $app['config']->set('delivery-auto-api.url', 'https://www.delivery-auto.com/api/v4/Public/');
+        $app['config']->set('delivery-auto-api.public_key', 'CDBFE2D5-BF02-4C0D-B7D6-5CF277761C50');
+        $app['config']->set('delivery-auto-api.secret_key', '6c131f01b99dfac3529d0cd68b1d6649');
+        $app['config']->set('delivery-auto-api.username', null);
+        $app['config']->set('delivery-auto-api.password', null);
+        $app['config']->set('cache.default', 'array');
     }
 }

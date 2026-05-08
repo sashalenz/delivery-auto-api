@@ -1,0 +1,63 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        php: ['8.2', '8.3', '8.4']
+        laravel: ['11.*', '12.*', '13.*']
+        dependency-version: [prefer-lowest, prefer-stable]
+        exclude:
+          - laravel: '13.*'
+            php: '8.2'
+
+    name: PHP ${{ matrix.php }} - Laravel ${{ matrix.laravel }} - ${{ matrix.dependency-version }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ matrix.php }}
+          extensions: dom, curl, libxml, mbstring, zip, fileinfo
+          coverage: none
+
+      - name: Install dependencies
+        run: |
+          composer require "illuminate/contracts:${{ matrix.laravel }}" --no-update
+          composer update --${{ matrix.dependency-version }} --prefer-dist --no-interaction
+
+      - name: Run tests
+        run: vendor/bin/pest
+
+  lint:
+    runs-on: ubuntu-latest
+    name: Pint + PHPStan
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+          coverage: none
+
+      - name: Install dependencies
+        run: composer update --prefer-dist --no-interaction
+
+      - name: Pint
+        run: vendor/bin/pint --test
+
+      - name: PHPStan
+        run: vendor/bin/phpstan analyse --no-progress

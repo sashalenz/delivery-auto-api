@@ -1,30 +1,48 @@
 <?php
 
+declare(strict_types=1);
+
 namespace Sashalenz\DeliveryAuto\ApiModels;
 
 use Illuminate\Support\Collection;
-use Illuminate\Support\Facades\Config;
-use Illuminate\Support\Facades\Validator;
-use Sashalenz\DeliveryAuto\Exceptions\DeliveryException;
+use Illuminate\Support\Traits\Conditionable;
+use Sashalenz\DeliveryAuto\Exceptions\DeliveryAutoException;
 use Sashalenz\DeliveryAuto\Request;
+use Spatie\LaravelData\Contracts\BaseData;
+use Spatie\LaravelData\Data;
+use Spatie\LaravelData\DataCollection;
 
+/**
+ * @phpstan-consistent-constructor
+ */
 abstract class BaseModel
 {
-    private bool $canBeCached = false;
-    private int $cacheSeconds = -1;
-    private bool $authRequired = false;
-    private bool $isPost = false;
-    private string $dataKey = 'data';
+    use Conditionable;
 
-    private array $params = [];
-    private ?string $method = null;
+    protected ?string $calledMethod = null;
 
-    public function __construct()
+    protected array $params = [];
+
+    protected bool $isPost = false;
+
+    protected string $authMode = Request::AUTH_NONE;
+
+    protected string $dataKey = 'data';
+
+    protected bool $canBeCached = false;
+
+    protected int $cacheSeconds = -1;
+
+    protected ?string $publicKey = null;
+
+    protected ?string $secretKey = null;
+
+    public static function make(): static
     {
-        $this->params['culture'] = Config::get('delivery-api.culture');
+        return new static;
     }
 
-    public function cache(int $seconds = -1) : self
+    public function cache(int $seconds = -1): static
     {
         $this->canBeCached = true;
         $this->cacheSeconds = $seconds;
@@ -32,97 +50,114 @@ abstract class BaseModel
         return $this;
     }
 
-    public function debug(): self
+    /**
+     * Override the HMAC keypair for HMAC-protected calls. Useful when an app
+     * holds multiple Delivery-Auto company keypairs (one per sender) and routes
+     * a single request to a specific sender:
+     *
+     * ```
+     * DeliveryAuto::receipt()
+     *     ->withCredentials($sender->public_key, $sender->secret_key)
+     *     ->postCreateReceipts($request);
+     * ```
+     *
+     * Carries through {@see reset()} so sequential calls on the same builder
+     * share the override. No effect on auth-less or login-session endpoints.
+     */
+    public function withCredentials(string $publicKey, string $secretKey): static
     {
-        $this->params['debugMode'] = true;
+        $this->publicKey = $publicKey;
+        $this->secretKey = $secretKey;
 
         return $this;
     }
 
-    public function auth(): self
+    /**
+     * Return a clone of this builder with per-call state (method/params/auth/post/dataKey)
+     * cleared, but caching preserved. Each public endpoint method on a module starts
+     * with `$this->reset()->method(...)` so consumers can reuse a single module
+     * instance across many calls without state leaking between them.
+     */
+    protected function reset(): static
     {
-        $this->authRequired = true;
+        $clone = clone $this;
+        $clone->calledMethod = null;
+        $clone->params = [];
+        $clone->isPost = false;
+        $clone->authMode = Request::AUTH_NONE;
+        $clone->dataKey = 'data';
+
+        return $clone;
+    }
+
+    protected function method(string $method): static
+    {
+        $this->calledMethod = $method;
 
         return $this;
     }
 
-    public function post(): self
+    protected function params(?Data $request = null): static
+    {
+        $this->params = $request === null ? [] : self::pruneNulls($request->toArray());
+
+        return $this;
+    }
+
+    protected function rawParams(array $params): static
+    {
+        $this->params = self::pruneNulls($params);
+
+        return $this;
+    }
+
+    protected function post(): static
     {
         $this->isPost = true;
 
         return $this;
     }
 
-    public function dataKey(string $dataKey): self
+    protected function withHmac(): static
     {
-        $this->dataKey = $dataKey;
+        $this->authMode = Request::AUTH_HMAC;
 
         return $this;
     }
 
-    protected function method(string $method) : self
+    protected function withSession(): static
     {
-        $this->method = $method;
+        $this->authMode = Request::AUTH_SESSION;
 
         return $this;
     }
 
-    public function params(array $params): self
+    protected function dataKey(string $key): static
     {
-        $this->params = array_merge($this->params, $params);
-
-        return $this;
-    }
-
-    public function culture(string $culture): self
-    {
-        $this->params['culture'] = $culture;
-
-        return $this;
-    }
-
-    public function country(int $countryId): self
-    {
-        $this->params['country'] = $countryId;
+        $this->dataKey = $key;
 
         return $this;
     }
 
     /**
-     * @param array $rules
-     * @return $this
-     * @throws DeliveryException
+     * @return Collection<array-key, mixed>
+     *
+     * @throws DeliveryAutoException
      */
-    protected function validate(array $rules = []): self
+    protected function request(): Collection
     {
-        $validator = Validator::make(
-            $this->params,
-            $rules
-        );
-
-        if ($validator->fails()) {
-            throw new DeliveryException('Validation exception ' . $validator->errors()->first());
-        }
-
-        return $this;
-    }
-
-    /**
-     * @return Collection
-     * @throws DeliveryException
-     */
-    public function request() : Collection
-    {
-        if (is_null($this->method)) {
-            throw new DeliveryException('API Exception: Provide method first');
+        if ($this->calledMethod === null) {
+            throw new DeliveryAutoException('API method not specified before request().');
         }
 
         $request = new Request(
-            $this->method,
-            $this->params,
-            $this->authRequired,
-            $this->dataKey,
-            $this->isPost
+            method: $this->calledMethod,
+            params: $this->params,
+            isPost: $this->isPost,
+            authMode: $this->authMode,
+            dataKey: $this->dataKey,
+            publicKey: $this->publicKey,
+            secretKey: $this->secretKey,
         );
 
         if ($this->canBeCached) {
@@ -130,5 +165,89 @@ abstract class BaseModel
         }
 
         return $request->make();
+    }
+
+    /**
+     * @return Collection<array-key, mixed>
+     *
+     * @throws DeliveryAutoException
+     */
+    protected function get(): Collection
+    {
+        return $this->request();
+    }
+
+    /**
+     * @throws DeliveryAutoException
+     */
+    protected function first(): array
+    {
+        $first = $this->request()->first();
+
+        return is_array($first) ? $first : [];
+    }
+
+    /**
+     * @template T of BaseData
+     *
+     * @param  class-string<T>  $class
+     * @return T|null
+     *
+     * @throws DeliveryAutoException
+     */
+    protected function toData(string $class): ?BaseData
+    {
+        $payload = $this->request();
+
+        if ($payload->isEmpty()) {
+            return null;
+        }
+
+        $first = $payload->first();
+
+        if (is_array($first) && array_is_list($first) === false) {
+            /** @var T */
+            return $class::from($first);
+        }
+
+        /** @var T */
+        return $class::from($payload->all());
+    }
+
+    /**
+     * @template T of BaseData
+     *
+     * @param  class-string<T>  $class
+     * @return DataCollection<int,T>
+     *
+     * @throws DeliveryAutoException
+     */
+    protected function toCollection(string $class): DataCollection
+    {
+        return new DataCollection($class, $this->request()->all());
+    }
+
+    /**
+     * Drop null entries before sending — Delivery-Auto's GET endpoints treat
+     * `?regionId=` (empty) as a real filter, not absent. Recursively prune
+     * inside nested arrays so optional fields in POST bodies behave the same.
+     */
+    private static function pruneNulls(array $params): array
+    {
+        $out = [];
+
+        foreach ($params as $key => $value) {
+            if ($value === null) {
+                continue;
+            }
+
+            if (is_array($value)) {
+                $value = self::pruneNulls($value);
+            }
+
+            $out[$key] = $value;
+        }
+
+        return $out;
     }
 }
