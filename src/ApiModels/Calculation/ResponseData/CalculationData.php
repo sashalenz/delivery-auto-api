@@ -18,7 +18,13 @@ use Spatie\LaravelData\DataCollection;
 final class CalculationData extends Data
 {
     public function __construct(
-        public float $allSumma,
+        // Nullable — vendor returns `null` for `allSumma` together with
+        // `status: false` on validation failures (e.g. invalid city /
+        // warehouse UUIDs, out-of-network destinations, missing required
+        // category fields). Strict `float`-typed constructor crashed
+        // before the caller could even inspect `status`; consumers must
+        // read `$status` first and ignore `$allSumma` when false.
+        public ?float $allSumma,
         public bool $status,
         public ?float $SummaryTransportCost = null,
         public ?float $SummaryDuCost = null,
