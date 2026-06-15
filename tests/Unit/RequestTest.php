@@ -109,6 +109,50 @@ it('throws DeliveryAutoException when the API returns status:false', function ()
         ->toThrow(DeliveryAutoException::class, 'Невірний логін або пароль');
 });
 
+it('renders an array `message` as one error per line instead of a JSON blob', function () {
+    Http::fake([
+        '*' => Http::response([
+            'status' => false,
+            'code' => 400,
+            'message' => ['Перше повідомлення', 'Друге повідомлення'],
+        ]),
+    ]);
+
+    $request = new Request(method: 'PostCreateReceipts', params: [], isPost: true);
+
+    expect(fn () => $request->make())
+        ->toThrow(
+            DeliveryAutoException::class,
+            'Перше повідомлення'.PHP_EOL.'Друге повідомлення'
+        );
+});
+
+it('transcodes a Windows-1251 error body to UTF-8', function () {
+    // Delivery-Auto answers receipt-validation errors in cp1251 — emulate the
+    // raw bytes the SDK receives off the wire.
+    $body = mb_convert_encoding(
+        (string) json_encode([
+            'status' => false,
+            'code' => 400,
+            'message' => ['Поле «Місто» некоректне', 'Вкажіть отримувача'],
+        ], JSON_UNESCAPED_UNICODE),
+        'Windows-1251',
+        'UTF-8'
+    );
+
+    Http::fake([
+        '*' => Http::response($body, 200, ['Content-Type' => 'application/json; charset=windows-1251']),
+    ]);
+
+    $request = new Request(method: 'PostCreateReceipts', params: [], isPost: true);
+
+    expect(fn () => $request->make())
+        ->toThrow(
+            DeliveryAutoException::class,
+            'Поле «Місто» некоректне'.PHP_EOL.'Вкажіть отримувача'
+        );
+});
+
 it('extracts the configured data key from the response envelope', function () {
     Http::fake([
         '*' => Http::response([

@@ -77,14 +77,13 @@ final class Request
             );
         }
 
-        $payload = $response->collect();
+        $payload = self::decodeBody($response);
 
         if ($payload->get('status') !== true) {
-            $message = $payload->get('message');
             $code = (int) $payload->get('code', 0);
 
             throw new DeliveryAutoException(
-                'Delivery-Auto API error. '.(is_string($message) ? $message : (string) json_encode($message)),
+                'Delivery-Auto API error. '.self::formatErrorMessage($payload->get('message')),
                 $code
             );
         }
@@ -109,6 +108,47 @@ final class Request
         }
 
         return collect([$value]);
+    }
+
+    /**
+     * Decode the JSON envelope, normalising the wire encoding to UTF-8 first.
+     *
+     * Delivery-Auto answers some endpoints — notably the receipt-validation
+     * errors of PostCreateReceipts — in Windows-1251. PHP's json_decode only
+     * accepts UTF-8 and would reject those bytes outright, so the raw body is
+     * transcoded whenever it isn't already valid UTF-8 before parsing. UTF-8
+     * responses (every success payload) pass through the check untouched.
+     *
+     * @return Collection<array-key, mixed>
+     */
+    private static function decodeBody(Response $response): Collection
+    {
+        $body = $response->body();
+
+        if (! mb_check_encoding($body, 'UTF-8')) {
+            $body = mb_convert_encoding($body, 'UTF-8', 'Windows-1251');
+        }
+
+        $decoded = json_decode($body, true);
+
+        return collect(is_array($decoded) ? $decoded : []);
+    }
+
+    /**
+     * Flatten the `message` envelope field into one operator-readable string.
+     *
+     * Delivery-Auto returns validation errors for some endpoints (notably
+     * PostCreateReceipts) as an ARRAY of messages — one entry per failed
+     * field — rather than a single string. json_encode-ing that array leaked
+     * a `["..."]` blob to the operator; instead each error is rendered on its
+     * own line. Wire-level Windows-1251 is already normalised to UTF-8 in
+     * {@see decodeBody}.
+     */
+    private static function formatErrorMessage(mixed $message): string
+    {
+        return collect(is_array($message) ? $message : [$message])
+            ->filter(fn ($line): bool => is_string($line) && $line !== '')
+            ->implode(PHP_EOL);
     }
 
     /**
